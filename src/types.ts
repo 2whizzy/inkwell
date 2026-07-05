@@ -34,6 +34,8 @@ export interface VocabEntry {
   example: string
   source: string
   tags: string[]
+  // Provenance when captured via the reader's "Learn" action
+  learnedFrom?: { bookId: string; title: string; locator: string } | null
   // SM-2 state
   ease: number
   interval: number // days
@@ -43,6 +45,46 @@ export interface VocabEntry {
   surfacedOn: string | null // date last shown in a writing session
   usedOn: string | null // date last detected in writing
   history: { date: string; used: boolean; note?: string }[]
+}
+
+export type BookKind = 'pdf' | 'epub' | 'web'
+
+// Metadata lives in localStorage; the raw file bytes live in IndexedDB keyed by id.
+export interface BookMeta {
+  id: string
+  kind: BookKind
+  title: string
+  author: string
+  cover: string | null // data URL
+  shelf: string
+  addedAt: number
+  openedAt: number
+  progress: number // 0..1
+  locator: string // last position (page number, epub CFI, or scroll %)
+  sourceUrl?: string // for web snapshots
+}
+
+export interface Highlight {
+  id: string
+  bookId: string
+  color: string
+  text: string
+  locator: string // page or scroll position
+  cfi?: string // epub content fragment identifier, when applicable
+  createdAt: number
+}
+
+export interface ReadingNote {
+  id: string
+  bookId: string | null
+  bookTitle: string
+  author: string
+  locator: string
+  passage: string
+  note: string
+  tags: string[]
+  learned: boolean // also pushed into the vocab engine
+  createdAt: number
 }
 
 export interface DayStats {
@@ -63,6 +105,10 @@ export interface Settings {
   typingSound: boolean
   paperTexture: 'plain' | 'ruled' | 'dotted' | 'linen'
   dailyGoal: number
+  // Reader
+  readerFont: 'Lora' | 'Fraunces' | 'Inter' | 'JetBrains Mono'
+  readerFontSize: number
+  readerBg: 'paper' | 'sepia' | 'dark' | 'black'
 }
 
 export interface AppState {
@@ -72,7 +118,12 @@ export interface AppState {
   stats: DayStats[]
   settings: Settings
   trash: Note[]
+  books: BookMeta[]
+  highlights: Highlight[]
+  readingNotes: ReadingNote[]
 }
+
+export const HIGHLIGHT_COLORS = ['#f5e6a3', '#f7c8b8', '#b8e0d2', '#c8d8f0', '#e2c8f0']
 
 export type MaturityBucket = 'New' | 'Learning' | 'Young' | 'Mature'
 

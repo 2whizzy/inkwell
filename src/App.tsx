@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { BookMeta } from './types'
 import { today, uid } from './types'
 import { dueQueue, gradeEntry } from './sm2'
 import { detectUsage } from './matcher'
+import { classifyPassage } from './reader'
+import { delFile } from './idb'
 import {
-  countWords, download, htmlToMarkdown, htmlToText, newNote, sha256, useAppState,
+  countWords, download, htmlToMarkdown, htmlToText, newNote, newVocab, sha256, useAppState,
 } from './store'
-import { Editor } from './components/Editor'
+import { Editor, type EditorHandle } from './components/Editor'
 import { Sidebar } from './components/Sidebar'
 import { Constellation } from './components/Constellation'
 import { VocabView } from './components/VocabView'
 import { StatsView } from './components/StatsView'
+import { LibraryView } from './components/LibraryView'
+import { Reader } from './components/Reader'
+import { ReadingNotesView } from './components/ReadingNotesView'
 import { Toggle } from './components/Toggle'
 
-type View = 'write' | 'vocab' | 'stats'
+type View = 'write' | 'read' | 'notes' | 'vocab' | 'stats'
 
 const NB_COLORS = ['#3b5b8c', '#7a2f3f', '#2f5d3f', '#8c6a3b', '#5d3b8c']
 const NB_ICONS = ['📓', '📔', '📕', '📗', '📘', '📙']
+const ACCENT_HEX = { 'ink-blue': '#3b5b8c', burgundy: '#7a2f3f', forest: '#2f5d3f' }
 
 export default function App() {
   const [state, setState] = useAppState()
@@ -24,11 +31,17 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [unlockedIds, setUnlockedIds] = useState<Set<string>>(new Set())
+  const [openBookId, setOpenBookId] = useState<string | null>(null)
   const wordsBefore = useRef<Map<string, number>>(new Map())
+  const editorRef = useRef<EditorHandle>(null)
+  const stateRef = useRef(state)
+  stateRef.current = state
 
   const { settings } = state
   const activeNote = state.notes.find((n) => n.id === activeId) || null
   const noteIsLocked = !!activeNote?.locked && !unlockedIds.has(activeNote.id)
+  const openBook = state.books.find((b) => b.id === openBookId) || null
+  const accentHex = ACCENT_HEX[settings.accent]
 
   const queue = useMemo(() => dueQueue(state.vocab), [state.vocab])
   const t = today()
@@ -58,25 +71,29 @@ export default function App() {
     (noteText: string, noteTitle: string) => {
       window.clearTimeout(detectTimer.current)
       detectTimer.current = window.setTimeout(() => {
-        setState((s) => {
-          const due = dueQueue(s.vocab)
-          let changed = false
-          const vocab = s.vocab.map((e) => {
-            if (!due.some((d) => d.id === e.id)) return e
-            if (e.usedOn === t) return e
-            if (!detectUsage(noteText, e)) return e
-            changed = true
+        const cur = stateRef.current
+        const due = dueQueue(cur.vocab)
+        const usedNow = cur.vocab.filter(
+          (e) => due.some((d) => d.id === e.id) && e.usedOn !== t && detectUsage(noteText, e),
+        )
+        if (usedNow.length === 0) return
+        const usedIdSet = new Set(usedNow.map((e) => e.id))
+        setState((s) => ({
+          ...s,
+          vocab: s.vocab.map((e) => {
+            if (!usedIdSet.has(e.id)) return e
             const graded = gradeEntry(e, 5)
             return {
-              ...graded,
-              usedOn: t,
-              skips: 0,
-              surfacedOn: null,
+              ...graded, usedOn: t, skips: 0, surfacedOn: null,
               history: [...e.history, { date: t, used: true, note: noteTitle || 'Untitled' }],
             }
-          })
-          return changed ? { ...s, vocab } : s
-        })
+          }),
+        }))
+        // Stamp each used term in the writing pad with its permanent gold mark.
+        for (const e of usedNow) {
+          const src = e.learnedFrom?.title || e.source || 'your vocabulary'
+          editorRef.current?.markUsed(e.term.replace(/^["'“]+|["'”]+$/g, ''), src, t)
+        }
       }, 1200)
     },
     [setState, t],
@@ -220,15 +237,74 @@ export default function App() {
   const set = <K extends keyof typeof settings>(key: K, value: (typeof settings)[K]) =>
     setState((s) => ({ ...s, settings: { ...s.settings, [key]: value } }))
 
+  // ---- Library / Reader ----
+  function addBook(b: BookMeta) {
+    setState((s) => ({ ...s, books: [b, ...s.books] }))
+  }
+  function openBookById(id: string) {
+    setState((s) => ({ ...s, books: s.books.map((b) => (b.id === id ? { ...b, openedAt: Date.now() } : b)) }))
+    setOpenBookId(id)
+    setView('read')
+  }
+  function deleteBook(id: string) {
+    delFile(id)
+    setState((s) => ({
+      ...s,
+      books: s.books.filter((b) => b.id !== id),
+      highlights: s.highlights.filter((h) => h.bookId !== id),
+    }))
+    if (openBookId === id) setOpenBookId(null)
+  }
+  function moveShelf(id: string, shelf: string) {
+    let name = shelf
+    if (shelf.startsWith('__new_')) {
+      const input = prompt('New shelf name')
+      if (!input?.trim()) return
+      name = input.trim()
+    }
+    setState((s) => ({ ...s, books: s.books.map((b) => (b.id === id ? { ...b, shelf: name } : b)) }))
+  }
+  function updateBookProgress(id: string, progress: number, locator: string) {
+    setState((s) => ({
+      ...s,
+      books: s.books.map((b) =>
+        b.id === id ? { ...b, progress: Math.max(b.progress, progress), locator } : b,
+      ),
+    }))
+  }
+  function addHighlight(bookId: string, text: string, color: string, locator: string, cfi?: string) {
+    setState((s) => ({
+      ...s,
+      highlights: [...s.highlights, { id: uid(), bookId, color, text, locator, cfi, createdAt: Date.now() }],
+    }))
+  }
+  function captureReading(book: BookMeta, passage: string, locator: string, learn: boolean) {
+    const rn = {
+      id: uid(), bookId: book.id, bookTitle: book.title, author: book.author,
+      locator, passage: passage.trim(), note: '', tags: [] as string[], learned: learn, createdAt: Date.now(),
+    }
+    const additions: Partial<typeof state> = { readingNotes: [rn, ...state.readingNotes] }
+    if (learn) {
+      const entry = newVocab({
+        type: classifyPassage(passage),
+        term: passage.trim(),
+        source: book.author ? `${book.title} — ${book.author}` : book.title,
+        learnedFrom: { bookId: book.id, title: book.title, locator },
+      })
+      additions.vocab = [...state.vocab, entry]
+    }
+    setState((s) => ({ ...s, ...additions }))
+  }
+
   return (
     <div className="app">
       <header className="topbar">
         <button className="hamburger" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Toggle sidebar">☰</button>
         <span className="logo">🖋️ Inkwell</span>
         <nav className="view-tabs">
-          {(['write', 'vocab', 'stats'] as View[]).map((v) => (
-            <button key={v} className={view === v ? 'tab-active' : ''} onClick={() => setView(v)}>
-              {v === 'write' ? 'Write' : v === 'vocab' ? 'Vocabulary' : 'Progress'}
+          {(['write', 'read', 'notes', 'vocab', 'stats'] as View[]).map((v) => (
+            <button key={v} className={view === v ? 'tab-active' : ''} onClick={() => { setView(v); if (v !== 'read') setOpenBookId(null) }}>
+              {v === 'write' ? 'Write' : v === 'read' ? 'Read' : v === 'notes' ? 'Reading Notes' : v === 'vocab' ? 'Vocabulary' : 'Progress'}
             </button>
           ))}
         </nav>
@@ -305,7 +381,7 @@ export default function App() {
                         </select>
                       )}
                     </div>
-                    <Editor note={activeNote} settings={settings} onChange={updateNote} onTyping={onTyping} />
+                    <Editor ref={editorRef} note={activeNote} settings={settings} onChange={updateNote} onTyping={onTyping} />
                   </>
                 )
               ) : (
@@ -323,6 +399,43 @@ export default function App() {
               )}
             </section>
           </>
+        )}
+
+        {view === 'read' && (
+          <section className="content content-full">
+            {openBook ? (
+              <Reader
+                book={openBook}
+                settings={settings}
+                highlights={state.highlights.filter((h) => h.bookId === openBook.id)}
+                onClose={() => setOpenBookId(null)}
+                onProgress={(p, loc) => updateBookProgress(openBook.id, p, loc)}
+                onHighlight={(text, color, loc, cfi) => addHighlight(openBook.id, text, color, loc, cfi)}
+                onNote={(passage, loc) => captureReading(openBook, passage, loc, false)}
+                onLearn={(passage, loc) => captureReading(openBook, passage, loc, true)}
+                onReaderSetting={set}
+              />
+            ) : (
+              <LibraryView
+                books={state.books}
+                accentHex={accentHex}
+                onAdd={addBook}
+                onOpen={openBookById}
+                onDelete={deleteBook}
+                onMoveShelf={moveShelf}
+              />
+            )}
+          </section>
+        )}
+
+        {view === 'notes' && (
+          <section className="content content-full">
+            <ReadingNotesView
+              notes={state.readingNotes}
+              onDelete={(id) => setState((s) => ({ ...s, readingNotes: s.readingNotes.filter((n) => n.id !== id) }))}
+              onOpenBook={openBookById}
+            />
+          </section>
         )}
 
         {view === 'vocab' && (

@@ -16,6 +16,9 @@ export const defaultSettings: Settings = {
   typingSound: false,
   paperTexture: 'plain',
   dailyGoal: 500,
+  readerFont: 'Lora',
+  readerFontSize: 20,
+  readerBg: 'paper',
 }
 
 export function newVocab(partial: Partial<VocabEntry>): VocabEntry {
@@ -27,6 +30,7 @@ export function newVocab(partial: Partial<VocabEntry>): VocabEntry {
     example: partial.example || '',
     source: partial.source || '',
     tags: partial.tags || [],
+    learnedFrom: partial.learnedFrom ?? null,
     ease: 2.5,
     interval: 0,
     reps: 0,
@@ -75,6 +79,9 @@ function seed(): AppState {
     stats: [],
     settings: defaultSettings,
     trash: [],
+    books: [],
+    highlights: [],
+    readingNotes: [],
   }
 }
 
@@ -85,6 +92,9 @@ export function loadState(): AppState {
     const s = JSON.parse(raw) as AppState
     s.settings = { ...defaultSettings, ...s.settings }
     s.trash = s.trash || []
+    s.books = s.books || []
+    s.highlights = s.highlights || []
+    s.readingNotes = s.readingNotes || []
     // purge trash older than 30 days
     const cutoff = Date.now() - 30 * 24 * 3600 * 1000
     s.trash = s.trash.filter((n) => n.updatedAt > cutoff)

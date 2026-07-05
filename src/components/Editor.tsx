@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { Note, Settings } from '../types'
 
 interface Props {
@@ -6,6 +6,10 @@ interface Props {
   settings: Settings
   onChange: (content: string, title: string) => void
   onTyping: (chars: number, deltaMs: number) => void
+}
+
+export interface EditorHandle {
+  markUsed: (term: string, source: string, date: string) => boolean
 }
 
 const PAUSE_THRESHOLD = 5000
@@ -42,7 +46,10 @@ const FORMATS: { cmd: string; label: string; title: string; arg?: string }[] = [
   { cmd: 'formatBlock', label: '¶', title: 'Paragraph', arg: 'p' },
 ]
 
-export function Editor({ note, settings, onChange, onTyping }: Props) {
+export const Editor = forwardRef<EditorHandle, Props>(function Editor(
+  { note, settings, onChange, onTyping },
+  handleRef,
+) {
   const ref = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
   const lastKey = useRef(0)
@@ -63,6 +70,43 @@ export function Editor({ note, settings, onChange, onTyping }: Props) {
     onChange(ref.current?.innerHTML || '', titleRef.current?.value || '')
   }
 
+  // Stamp the first unmarked occurrence of `term` with a permanent gold mark,
+  // preserving the caret. Returns true if a mark was placed.
+  useImperativeHandle(handleRef, () => ({
+    markUsed(term, source, date) {
+      const root = ref.current
+      if (!root || !term) return false
+      const caret = saveCaret(root)
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      const lower = term.toLowerCase()
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const text = (node as Text).data
+        const idx = text.toLowerCase().indexOf(lower)
+        if (idx < 0) continue
+        if ((node.parentElement as HTMLElement)?.closest('.used-mark')) continue
+        const range = document.createRange()
+        range.setStart(node, idx)
+        range.setEnd(node, idx + term.length)
+        const mark = document.createElement('span')
+        mark.className = 'used-mark used-mark-fresh'
+        mark.dataset.source = source || 'your vocabulary'
+        mark.dataset.date = date
+        mark.title = `Learned from ${source || 'your vocabulary'} · used ${date}`
+        try {
+          range.surroundContents(mark)
+        } catch {
+          return false // spans a formatting boundary — skip gracefully
+        }
+        window.setTimeout(() => mark.classList.remove('used-mark-fresh'), 1600)
+        if (caret) restoreCaret(root, caret)
+        emit()
+        return true
+      }
+      return false
+    },
+  }))
+
   function handleKeyDown(e: React.KeyboardEvent) {
     const now = Date.now()
     if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Enter') {
@@ -76,7 +120,6 @@ export function Editor({ note, settings, onChange, onTyping }: Props) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'u') { e.preventDefault(); document.execCommand('underline') }
   }
 
-  // Typewriter mode: keep the caret line vertically centered.
   function centerCaret() {
     if (!settings.typewriterMode) return
     const sel = window.getSelection()
@@ -144,4 +187,34 @@ export function Editor({ note, settings, onChange, onTyping }: Props) {
       </div>
     </div>
   )
+})
+
+// Caret as an absolute character offset within the editable root.
+function saveCaret(root: HTMLElement): number | null {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0 || !root.contains(sel.anchorNode)) return null
+  const range = sel.getRangeAt(0)
+  const pre = range.cloneRange()
+  pre.selectNodeContents(root)
+  pre.setEnd(range.endContainer, range.endOffset)
+  return pre.toString().length
+}
+
+function restoreCaret(root: HTMLElement, offset: number) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let remaining = offset
+  let node: Node | null
+  while ((node = walker.nextNode())) {
+    const len = (node as Text).data.length
+    if (remaining <= len) {
+      const sel = window.getSelection()
+      const range = document.createRange()
+      range.setStart(node, Math.max(0, remaining))
+      range.collapse(true)
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      return
+    }
+    remaining -= len
+  }
 }
