@@ -8,6 +8,7 @@ import { paintHighlights } from '../highlight'
 
 interface Chapter { label: string; goto: () => void; active?: boolean }
 interface Selected { text: string; locator: string; x: number; y: number; cfi?: string }
+type Spread = 1 | 2
 
 interface Props {
   book: BookMeta
@@ -30,11 +31,26 @@ const BG: Record<Settings['readerBg'], { bg: string; fg: string }> = {
 
 export function Reader(props: Props) {
   const { book, settings, highlights, onClose, onReaderSetting } = props
+  const rootRef = useRef<HTMLDivElement>(null)
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [sidebar, setSidebar] = useState<'toc' | 'marks'>('toc')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sel, setSel] = useState<Selected | null>(null)
+  const [spread, setSpread] = useState<Spread>(1)
+  const [isFull, setIsFull] = useState(false)
   const bg = BG[settings.readerBg]
+  const canSpread = book.kind === 'pdf' || book.kind === 'epub'
+
+  useEffect(() => {
+    const onFs = () => setIsFull(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onFs)
+    return () => document.removeEventListener('fullscreenchange', onFs)
+  }, [])
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) rootRef.current?.requestFullscreen?.().catch(() => {})
+    else document.exitFullscreen?.()
+  }
 
   function act(kind: 'hl' | 'note' | 'learn', color?: string) {
     if (!sel) return
@@ -46,23 +62,36 @@ export function Reader(props: Props) {
   }
 
   return (
-    <div className="reader" style={{ background: bg.bg, color: bg.fg }}>
+    <div ref={rootRef} className="reader" style={{ background: bg.bg, color: bg.fg }}>
       <div className="reader-topbar">
         <button className="reader-back" onClick={onClose}>‹ Library</button>
         <button className="reader-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
         <span className="reader-title">{book.title}</span>
         <div className="reader-tools">
+          {canSpread && (
+            <div className="spread-toggle" role="group" title="Page layout">
+              <button className={spread === 1 ? 'active' : ''} onClick={() => setSpread(1)} title="Single page">▯</button>
+              <button className={spread === 2 ? 'active' : ''} onClick={() => setSpread(2)} title="Two pages">▯▯</button>
+            </div>
+          )}
           <select value={settings.readerBg} onChange={(e) => onReaderSetting('readerBg', e.target.value as Settings['readerBg'])} title="Background">
             <option value="paper">Paper</option>
             <option value="sepia">Sepia</option>
             <option value="dark">Dark</option>
             <option value="black">Black (OLED)</option>
           </select>
-          <select value={settings.readerFont} onChange={(e) => onReaderSetting('readerFont', e.target.value as Settings['readerFont'])} title="Font">
-            {(['Lora', 'Fraunces', 'Inter', 'JetBrains Mono'] as const).map((f) => <option key={f} value={f}>{f}</option>)}
-          </select>
-          <button onClick={() => onReaderSetting('readerFontSize', Math.max(14, settings.readerFontSize - 1))} title="Smaller">A−</button>
-          <button onClick={() => onReaderSetting('readerFontSize', Math.min(30, settings.readerFontSize + 1))} title="Larger">A+</button>
+          {book.kind !== 'pdf' && (
+            <select value={settings.readerFont} onChange={(e) => onReaderSetting('readerFont', e.target.value as Settings['readerFont'])} title="Font">
+              {(['Lora', 'Fraunces', 'Inter', 'JetBrains Mono'] as const).map((f) => <option key={f} value={f}>{f}</option>)}
+            </select>
+          )}
+          {book.kind !== 'pdf' && (
+            <>
+              <button onClick={() => onReaderSetting('readerFontSize', Math.max(14, settings.readerFontSize - 1))} title="Smaller">A−</button>
+              <button onClick={() => onReaderSetting('readerFontSize', Math.min(30, settings.readerFontSize + 1))} title="Larger">A+</button>
+            </>
+          )}
+          <button className="reader-full" onClick={toggleFullscreen} title={isFull ? 'Exit fullscreen' : 'Fullscreen'}>{isFull ? '⤢' : '⛶'}</button>
         </div>
       </div>
 
@@ -94,8 +123,8 @@ export function Reader(props: Props) {
         {sidebarOpen && <div className="reader-scrim" onClick={() => setSidebarOpen(false)} />}
 
         <div className="reader-main">
-          {book.kind === 'pdf' && <PdfReader {...props} setChapters={setChapters} onSelect={setSel} />}
-          {book.kind === 'epub' && <EpubReader {...props} setChapters={setChapters} onSelect={setSel} />}
+          {book.kind === 'pdf' && <PdfReader {...props} spread={spread} setChapters={setChapters} onSelect={setSel} />}
+          {book.kind === 'epub' && <EpubReader {...props} spread={spread} setChapters={setChapters} onSelect={setSel} />}
           {book.kind === 'web' && <HtmlReader {...props} onSelect={setSel} />}
         </div>
       </div>
@@ -116,16 +145,17 @@ export function Reader(props: Props) {
 }
 
 /* ---------------- PDF ---------------- */
-function PdfReader({ book, highlights, onProgress, onSelect, setChapters }: Props & {
+function PdfReader({ book, highlights, onProgress, onSelect, setChapters, spread }: Props & {
   onSelect: (s: Selected | null) => void
   setChapters: (c: Chapter[]) => void
+  spread: Spread
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const [fit, setFit] = useState<'width' | 'page'>('width')
   const maxPage = useRef(1)
 
   useEffect(() => {
     let cancelled = false
+    const observers: IntersectionObserver[] = []
     const scroller = scrollRef.current
     if (!scroller) return
     scroller.innerHTML = ''
@@ -145,53 +175,73 @@ function PdfReader({ book, highlights, onProgress, onSelect, setChapters }: Prop
             const ref = dest?.[0]
             if (ref) {
               const pageIndex = await pdf.getPageIndex(ref).catch(() => 0)
-              scroller.querySelector(`[data-page="${pageIndex + 1}"]`)?.scrollIntoView({ behavior: 'smooth' })
+              scroller.querySelector(`[data-page="${pageIndex + 1}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
             }
           },
         })))
       } else setChapters([])
 
-      const containerW = scroller.clientWidth - 48
+      // Available width for one page, accounting for the gutter between a spread.
+      const gap = 20
+      const pad = 32
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const usable = scroller.clientWidth - pad
+      const pageW = spread === 2 ? (usable - gap) / 2 : Math.min(usable, 900)
+
       for (let p = 1; p <= pdf.numPages; p++) {
         const holder = document.createElement('div')
         holder.className = 'pdf-page'
         holder.dataset.page = String(p)
         scroller.appendChild(holder)
-        // Lazy-render as pages approach the viewport.
         const io = new IntersectionObserver(async (entries) => {
           if (!entries[0].isIntersecting || holder.dataset.rendered) return
           holder.dataset.rendered = '1'
           io.disconnect()
           const page = await pdf.getPage(p)
           const base = page.getViewport({ scale: 1 })
-          const scale = fit === 'width' ? containerW / base.width : (scroller.clientHeight - 60) / base.height
+          const scale = pageW / base.width
           const viewport = page.getViewport({ scale })
+          const cssW = Math.floor(viewport.width)
+          const cssH = Math.floor(viewport.height)
+          holder.style.width = `${cssW}px`
+          holder.style.height = `${cssH}px`
+
           const canvas = document.createElement('canvas')
-          canvas.width = viewport.width
-          canvas.height = viewport.height
-          holder.style.width = `${viewport.width}px`
-          holder.style.height = `${viewport.height}px`
+          canvas.width = Math.floor(cssW * dpr)
+          canvas.height = Math.floor(cssH * dpr)
+          canvas.style.width = `${cssW}px`
+          canvas.style.height = `${cssH}px`
           holder.appendChild(canvas)
-          await page.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport }).promise
+          await page.render({
+            canvas,
+            viewport,
+            transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+          }).promise
+
           try {
             const textLayerDiv = document.createElement('div')
-            textLayerDiv.className = 'pdf-text-layer'
+            textLayerDiv.className = 'textLayer'
+            textLayerDiv.style.setProperty('--scale-factor', String(scale))
+            textLayerDiv.style.width = `${cssW}px`
+            textLayerDiv.style.height = `${cssH}px`
             holder.appendChild(textLayerDiv)
             const tl = new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container: textLayerDiv, viewport })
             await tl.render()
           } catch { /* selection unavailable for this page */ }
+
           if (p > maxPage.current) {
             maxPage.current = p
             onProgress(p / pdf.numPages, String(p))
           }
           paintHighlights(scroller, highlights.map((h) => ({ text: h.text, color: h.color })))
-        }, { root: scroller, rootMargin: '600px' })
+        }, { root: scroller, rootMargin: '800px' })
+        observers.push(io)
         io.observe(holder)
       }
     })()
-    return () => { cancelled = true }
+    return () => { cancelled = true; observers.forEach((o) => o.disconnect()) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [book.id, fit])
+  }, [book.id, spread])
 
   useEffect(() => {
     if (scrollRef.current) paintHighlights(scrollRef.current, highlights.map((h) => ({ text: h.text, color: h.color })))
@@ -201,23 +251,21 @@ function PdfReader({ book, highlights, onProgress, onSelect, setChapters }: Prop
 
   return (
     <div className="pdf-wrap">
-      <div className="pdf-fit">
-        <button className={fit === 'width' ? 'active' : ''} onClick={() => setFit('width')}>Fit width</button>
-        <button className={fit === 'page' ? 'active' : ''} onClick={() => setFit('page')}>Fit page</button>
-      </div>
-      <div ref={scrollRef} className="pdf-scroll" onMouseUp={onMouseUp} onScroll={() => onSelect(null)} />
+      <div ref={scrollRef} className={`pdf-scroll ${spread === 2 ? 'pdf-spread' : ''}`} onMouseUp={onMouseUp} onScroll={() => onSelect(null)} />
     </div>
   )
 }
 
 /* ---------------- EPUB ---------------- */
-function EpubReader({ book, settings, highlights, onProgress, onHighlight, onSelect, setChapters }: Props & {
+function EpubReader({ book, settings, highlights, onProgress, onHighlight, onSelect, setChapters, spread }: Props & {
   onSelect: (s: Selected | null) => void
   setChapters: (c: Chapter[]) => void
+  spread: Spread
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const rendition = useRef<Rendition | null>(null)
   const bookRef = useRef<Book | null>(null)
+  const locRef = useRef<string>(book.locator || '')
   const bg = BG[settings.readerBg]
 
   useEffect(() => {
@@ -228,15 +276,20 @@ function EpubReader({ book, settings, highlights, onProgress, onHighlight, onSel
       const ePub = (await import('epubjs')).default
       const epubBook = ePub(data.slice(0))
       bookRef.current = epubBook
-      const rend = epubBook.renderTo(hostRef.current, { width: '100%', height: '100%', flow: 'paginated', spread: 'auto' })
+      const rend = epubBook.renderTo(hostRef.current, {
+        width: '100%', height: '100%', flow: 'paginated',
+        spread: spread === 2 ? 'always' : 'none',
+      })
       rendition.current = rend
-      await rend.display(book.locator || undefined)
+      applyTheme(rend, bg, settings)
+      await rend.display(locRef.current || undefined)
       if (cancelled) return
 
       const nav = await epubBook.loaded.navigation
       setChapters(nav.toc.map((item) => ({ label: item.label.trim(), goto: () => rend.display(item.href) })))
 
       rend.on('relocated', (loc: { start: { cfi: string; percentage: number } }) => {
+        locRef.current = loc.start.cfi
         onProgress(loc.start.percentage || 0, loc.start.cfi)
       })
       rend.on('selected', (cfiRange: string, contents: { window: Window }) => {
@@ -247,33 +300,27 @@ function EpubReader({ book, settings, highlights, onProgress, onHighlight, onSel
         const host = hostRef.current!.getBoundingClientRect()
         onSelect({
           text, locator: cfiRange, cfi: cfiRange,
-          x: (rect ? rect.left : host.width / 2),
-          y: (rect ? rect.bottom + 40 : 120),
+          x: rect ? host.left + rect.left + rect.width / 2 - 90 : host.left + host.width / 2,
+          y: rect ? host.top + rect.bottom + 8 : 120,
         })
       })
       for (const h of highlights) {
-        if (h.cfi) try { rend.annotations.highlight(h.cfi, {}, () => {}, '', { fill: h.color }) } catch { /* noop */ }
+        if (h.cfi) try { rend.annotations.highlight(h.cfi, {}, () => {}, '', { fill: h.color, 'fill-opacity': '0.35' }) } catch { /* noop */ }
       }
     })()
-    return () => { cancelled = true; bookRef.current?.destroy() }
+    return () => { cancelled = true; bookRef.current?.destroy(); rendition.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [book.id])
+  }, [book.id, spread])
 
   useEffect(() => {
-    const rend = rendition.current
-    if (!rend) return
-    rend.themes.override('color', bg.fg)
-    rend.themes.override('background', bg.bg)
-    rend.themes.override('font-size', `${settings.readerFontSize}px`)
-    rend.themes.override('font-family', `'${settings.readerFont}', serif`)
-  }, [settings.readerBg, settings.readerFontSize, settings.readerFont, bg.bg, bg.fg])
+    if (rendition.current) applyTheme(rendition.current, bg, settings)
+  }, [settings.readerBg, settings.readerFontSize, settings.readerFont, bg])
 
-  // Re-apply any highlight that isn't yet drawn (e.g. just added).
   useEffect(() => {
     const rend = rendition.current
     if (!rend) return
     for (const h of highlights) {
-      if (h.cfi) try { rend.annotations.highlight(h.cfi, {}, () => {}, '', { fill: h.color }) } catch { /* already drawn */ }
+      if (h.cfi) try { rend.annotations.highlight(h.cfi, {}, () => {}, '', { fill: h.color, 'fill-opacity': '0.35' }) } catch { /* already drawn */ }
     }
   }, [highlights, onHighlight])
 
@@ -284,6 +331,13 @@ function EpubReader({ book, settings, highlights, onProgress, onHighlight, onSel
       <button className="epub-nav epub-next" onClick={() => rendition.current?.next()}>›</button>
     </div>
   )
+}
+
+function applyTheme(rend: Rendition, bg: { bg: string; fg: string }, settings: Settings) {
+  rend.themes.override('color', bg.fg)
+  rend.themes.override('background', bg.bg)
+  rend.themes.override('font-size', `${settings.readerFontSize}px`)
+  rend.themes.override('font-family', `'${settings.readerFont}', serif`)
 }
 
 /* ---------------- Web / HTML snapshot ---------------- */
