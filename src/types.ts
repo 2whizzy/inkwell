@@ -103,6 +103,7 @@ export interface Settings {
   focusMode: boolean
   typewriterMode: boolean
   typingSound: boolean
+  autocorrect: boolean
   paperTexture: 'plain' | 'ruled' | 'dotted' | 'linen'
   dailyGoal: number
   // Reader

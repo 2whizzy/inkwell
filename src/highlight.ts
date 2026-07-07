@@ -5,10 +5,15 @@ import { HIGHLIGHT_COLORS } from './types'
 // Falls back to a no-op where the API is unavailable.
 type HL = { text: string; color: string }
 
-export function paintHighlights(container: HTMLElement, highlights: HL[]) {
-  const CSSns = window.CSS as unknown as { highlights?: Map<string, unknown> }
-  if (!CSSns.highlights || typeof Highlight === 'undefined') return
-  for (let i = 0; i < HIGHLIGHT_COLORS.length; i++) CSSns.highlights.delete(`ink-hl-${i}`)
+// `win` lets us paint into an iframe's own document (same-origin srcdoc).
+export function paintHighlights(container: HTMLElement, highlights: HL[], win: Window = window) {
+  const w = win as unknown as {
+    CSS?: { highlights?: Map<string, unknown> }
+    Highlight?: new (...ranges: Range[]) => unknown
+  }
+  const registry = w.CSS?.highlights
+  if (!registry || typeof w.Highlight === 'undefined') return
+  for (let i = 0; i < HIGHLIGHT_COLORS.length; i++) registry.delete(`ink-hl-${i}`)
 
   const byColor = new Map<number, Range[]>()
   for (const hl of highlights) {
@@ -20,14 +25,16 @@ export function paintHighlights(container: HTMLElement, highlights: HL[]) {
       byColor.set(ci, arr)
     }
   }
+  const Ctor = w.Highlight!
   for (const [ci, ranges] of byColor) {
-    CSSns.highlights.set(`ink-hl-${ci}`, new Highlight(...ranges))
+    registry.set(`ink-hl-${ci}`, new Ctor(...ranges))
   }
 }
 
 // Find ranges of `needle` across text nodes (handles spans splitting the text).
 function findRanges(root: HTMLElement, needle: string): Range[] {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const doc = root.ownerDocument || document
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   const nodes: Text[] = []
   let full = ''
   const starts: number[] = []
@@ -80,7 +87,7 @@ function makeRange(nodes: Text[], starts: number[], start: number, end: number):
   const e = find(end)
   if (!s || !e) return null
   try {
-    const r = document.createRange()
+    const r = (nodes[0].ownerDocument || document).createRange()
     r.setStart(s[0], Math.min(s[1], s[0].length))
     r.setEnd(e[0], Math.min(e[1], e[0].length))
     return r

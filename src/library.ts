@@ -1,7 +1,7 @@
 import type { BookMeta } from './types'
 import { uid } from './types'
 import { putFile } from './idb'
-import { getPdfjs } from './reader'
+import { getPdfjs, sanitizeFullPage } from './reader'
 
 // A generated fallback cover: warm paper card with the title set in a serif.
 export function makeTitleCover(title: string, author: string, tint = '#3b5b8c'): string {
@@ -104,18 +104,25 @@ export async function importEpub(file: File, tint: string): Promise<BookMeta> {
   return baseMeta(id, 'epub', title, author, cover)
 }
 
+// Store the full page (scripts stripped, base href injected) for the live
+// iframe viewer. `rawHtml` is the untouched page source from the proxy/paste.
 export async function saveWebSnapshot(
-  title: string,
-  author: string,
+  fallbackTitle: string,
   url: string,
-  html: string,
+  rawHtml: string,
   tint: string,
 ): Promise<BookMeta> {
   const id = uid()
+  const { html, title } = sanitizeFullPage(rawHtml, url)
   await putFile(id, html)
-  const meta = baseMeta(id, 'web', title, author, makeTitleCover(title, author, tint))
+  const finalTitle = title || fallbackTitle || url || 'Web page'
+  const meta = baseMeta(id, 'web', finalTitle, hostOf(url), makeTitleCover(finalTitle, hostOf(url), tint))
   meta.sourceUrl = url
   return meta
+}
+
+function hostOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
 }
 
 function baseMeta(id: string, kind: BookMeta['kind'], title: string, author: string, cover: string | null): BookMeta {

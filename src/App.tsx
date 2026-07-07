@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { BookMeta } from './types'
+import type { BookMeta, Note } from './types'
 import { today, uid } from './types'
 import { dueQueue, gradeEntry } from './sm2'
 import { detectUsage } from './matcher'
@@ -32,14 +32,15 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [unlockedIds, setUnlockedIds] = useState<Set<string>>(new Set())
   const [openBookId, setOpenBookId] = useState<string | null>(null)
+  const [splitId, setSplitId] = useState<string | null>(null)
   const wordsBefore = useRef<Map<string, number>>(new Map())
-  const editorRef = useRef<EditorHandle>(null)
+  const leftRef = useRef<EditorHandle>(null)
+  const rightRef = useRef<EditorHandle>(null)
   const stateRef = useRef(state)
   stateRef.current = state
 
   const { settings } = state
   const activeNote = state.notes.find((n) => n.id === activeId) || null
-  const noteIsLocked = !!activeNote?.locked && !unlockedIds.has(activeNote.id)
   const openBook = state.books.find((b) => b.id === openBookId) || null
   const accentHex = ACCENT_HEX[settings.accent]
 
@@ -68,7 +69,7 @@ export default function App() {
   // Usage detection, debounced against the current note text.
   const detectTimer = useRef<number | undefined>(undefined)
   const runDetection = useCallback(
-    (noteText: string, noteTitle: string) => {
+    (noteText: string, noteTitle: string, ref: React.RefObject<EditorHandle | null>) => {
       window.clearTimeout(detectTimer.current)
       detectTimer.current = window.setTimeout(() => {
         const cur = stateRef.current
@@ -89,10 +90,10 @@ export default function App() {
             }
           }),
         }))
-        // Stamp each used term in the writing pad with its permanent gold mark.
+        // Stamp each used term in the pane where it was typed.
         for (const e of usedNow) {
           const src = e.learnedFrom?.title || e.source || 'your vocabulary'
-          editorRef.current?.markUsed(e.term.replace(/^["'“]+|["'”]+$/g, ''), src, t)
+          ref.current?.markUsed(e.term.replace(/^["'“]+|["'”]+$/g, ''), src, t)
         }
       }, 1200)
     },
@@ -106,21 +107,19 @@ export default function App() {
     return [...stats, fn({ date, words: 0, chars: 0, activeMs: 0 })]
   }
 
-  function updateNote(content: string, title: string) {
-    if (!activeNote) return
+  function updateNoteById(id: string, ref: React.RefObject<EditorHandle | null>, content: string, title: string) {
     const text = htmlToText(content)
     const words = countWords(text)
-    const prev = wordsBefore.current.get(activeNote.id) ?? countWords(htmlToText(activeNote.content))
+    const prevNote = stateRef.current.notes.find((n) => n.id === id)
+    const prev = wordsBefore.current.get(id) ?? countWords(htmlToText(prevNote?.content || ''))
     const delta = words - prev
-    wordsBefore.current.set(activeNote.id, words)
+    wordsBefore.current.set(id, words)
     setState((s) => ({
       ...s,
-      notes: s.notes.map((n) =>
-        n.id === activeNote.id ? { ...n, content, title, updatedAt: Date.now() } : n,
-      ),
+      notes: s.notes.map((n) => (n.id === id ? { ...n, content, title, updatedAt: Date.now() } : n)),
       stats: delta > 0 ? upsertDay(s.stats, t, (d) => ({ ...d, words: d.words + delta })) : s.stats,
     }))
-    runDetection(text + ' ' + title, title)
+    runDetection(text + ' ' + title, title, ref)
   }
 
   function onTyping(chars: number, deltaMs: number) {
@@ -135,12 +134,12 @@ export default function App() {
   }
 
   // Version snapshot when leaving a note (if meaningfully changed).
-  function snapshotVersion() {
-    if (!activeNote) return
+  function snapshotNote(id: string | null) {
+    if (!id) return
     setState((s) => ({
       ...s,
       notes: s.notes.map((n) => {
-        if (n.id !== activeNote.id) return n
+        if (n.id !== id) return n
         const last = n.versions[n.versions.length - 1]
         if ((last && last.content === n.content) || !n.content.trim()) return n
         return {
@@ -152,7 +151,7 @@ export default function App() {
   }
 
   function selectNote(id: string) {
-    snapshotVersion()
+    snapshotNote(activeId)
     setActiveId(id)
     setView('write')
     setSidebarOpen(false)
@@ -161,10 +160,20 @@ export default function App() {
   function addNote(notebookId: string) {
     const n = newNote(notebookId)
     setState((s) => ({ ...s, notes: [...s.notes, n] }))
-    snapshotVersion()
+    snapshotNote(activeId)
     setActiveId(n.id)
     setView('write')
     setSidebarOpen(false)
+  }
+
+  function openSplit() {
+    const other = stateRef.current.notes.find((n) => n.id !== activeId)
+    if (other) { setSplitId(other.id); return }
+    const nb = activeNote?.notebookId || state.notebooks[0]?.id
+    if (!nb) return
+    const n = newNote(nb)
+    setState((s) => ({ ...s, notes: [...s.notes, n] }))
+    setSplitId(n.id)
   }
 
   function addNotebook() {
@@ -192,15 +201,14 @@ export default function App() {
     if (activeId === id) setActiveId(state.notes.find((n) => n.id !== id)?.id || null)
   }
 
-  async function toggleLock() {
-    if (!activeNote) return
-    if (activeNote.locked) {
+  async function toggleLock(note: Note) {
+    if (note.locked) {
       const pw = prompt('Enter password to remove lock')
       if (pw === null) return
-      if ((await sha256(pw)) !== activeNote.passwordHash) { alert('Wrong password'); return }
+      if ((await sha256(pw)) !== note.passwordHash) { alert('Wrong password'); return }
       setState((s) => ({
         ...s,
-        notes: s.notes.map((n) => (n.id === activeNote.id ? { ...n, locked: false, passwordHash: undefined } : n)),
+        notes: s.notes.map((n) => (n.id === note.id ? { ...n, locked: false, passwordHash: undefined } : n)),
       }))
     } else {
       const pw = prompt('Set a password for this note')
@@ -208,18 +216,17 @@ export default function App() {
       const hash = await sha256(pw)
       setState((s) => ({
         ...s,
-        notes: s.notes.map((n) => (n.id === activeNote.id ? { ...n, locked: true, passwordHash: hash } : n)),
+        notes: s.notes.map((n) => (n.id === note.id ? { ...n, locked: true, passwordHash: hash } : n)),
       }))
-      setUnlockedIds((ids) => new Set([...ids, activeNote.id]))
+      setUnlockedIds((ids) => new Set([...ids, note.id]))
     }
   }
 
-  async function unlock() {
-    if (!activeNote) return
+  async function unlock(note: Note) {
     const pw = prompt('Password')
     if (pw === null) return
-    if ((await sha256(pw)) === activeNote.passwordHash) {
-      setUnlockedIds((ids) => new Set([...ids, activeNote.id]))
+    if ((await sha256(pw)) === note.passwordHash) {
+      setUnlockedIds((ids) => new Set([...ids, note.id]))
     } else alert('Wrong password')
   }
 
@@ -296,6 +303,71 @@ export default function App() {
     setState((s) => ({ ...s, ...additions }))
   }
 
+  function renderActions(note: Note) {
+    return (
+      <div className="note-actions">
+        <button onClick={() => toggleLock(note)}>{note.locked ? '🔓 Remove lock' : '🔒 Lock'}</button>
+        <button onClick={() => download((note.title || 'note') + '.md', `# ${note.title || 'Untitled'}\n\n${htmlToMarkdown(note.content)}`, 'text/markdown')}>⬇ Markdown</button>
+        <button onClick={() => window.print()}>⬇ PDF</button>
+        {note.versions.length > 0 && (
+          <select
+            className="version-select"
+            value=""
+            onChange={(e) => {
+              const v = note.versions[Number(e.target.value)]
+              if (v && confirm('Restore this version? Your current text will be snapshotted first.')) {
+                snapshotNote(note.id)
+                setState((s) => ({ ...s, notes: s.notes.map((n) => (n.id === note.id ? { ...n, content: v.content, updatedAt: Date.now() } : n)) }))
+                wordsBefore.current.delete(note.id)
+                ;(note.id === splitId ? rightRef : leftRef).current?.reload(v.content)
+              }
+            }}
+          >
+            <option value="" disabled>⏱ History ({note.versions.length})</option>
+            {note.versions.map((v, i) => (<option key={i} value={i}>{new Date(v.savedAt).toLocaleString()}</option>))}
+          </select>
+        )}
+      </div>
+    )
+  }
+
+  function renderPane(noteId: string | null, ref: React.RefObject<EditorHandle | null>, side: 'left' | 'right') {
+    const note = state.notes.find((n) => n.id === noteId) || null
+    if (!note) return <div className="pane empty-state"><p className="hint">Pick a note.</p></div>
+    const locked = note.locked && !unlockedIds.has(note.id)
+    return (
+      <div className="pane">
+        <div className="pane-head">
+          <select
+            className="pane-picker"
+            value={note.id}
+            onChange={(e) => {
+              const v = e.target.value
+              if (side === 'left') { snapshotNote(activeId); setActiveId(v) }
+              else { snapshotNote(splitId); setSplitId(v) }
+            }}
+          >
+            {state.notes.map((n) => (<option key={n.id} value={n.id}>{n.title || 'Untitled'}</option>))}
+          </select>
+          {side === 'left'
+            ? (!splitId && <button className="pane-btn" onClick={openSplit} title="Open a second note beside this one">⊟ Split</button>)
+            : <button className="pane-btn" onClick={() => { snapshotNote(splitId); setSplitId(null) }} title="Close split">✕ Close</button>}
+        </div>
+        {locked ? (
+          <div className="locked-view">
+            <div className="locked-blur">{'Aa '.repeat(180)}</div>
+            <button className="unlock-btn" onClick={() => unlock(note)}>🔒 Unlock note</button>
+          </div>
+        ) : (
+          <>
+            {renderActions(note)}
+            <Editor ref={ref} note={note} settings={settings} onChange={(c, tt) => updateNoteById(note.id, ref, c, tt)} onTyping={onTyping} />
+          </>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       <header className="topbar">
@@ -343,47 +415,10 @@ export default function App() {
             {sidebarOpen && <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />}
             <section className="content">
               {activeNote ? (
-                noteIsLocked ? (
-                  <div className="locked-view">
-                    <div className="locked-blur">{'Aa '.repeat(180)}</div>
-                    <button className="unlock-btn" onClick={unlock}>🔒 Unlock note</button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="note-actions">
-                      <button onClick={toggleLock}>{activeNote.locked ? '🔓 Remove lock' : '🔒 Lock'}</button>
-                      <button onClick={() => download((activeNote.title || 'note') + '.md', `# ${activeNote.title || 'Untitled'}\n\n${htmlToMarkdown(activeNote.content)}`, 'text/markdown')}>
-                        ⬇ Markdown
-                      </button>
-                      <button onClick={() => window.print()}>⬇ PDF</button>
-                      {activeNote.versions.length > 0 && (
-                        <select
-                          className="version-select"
-                          value=""
-                          onChange={(e) => {
-                            const v = activeNote.versions[Number(e.target.value)]
-                            if (v && confirm('Restore this version? Your current text will be snapshotted first.')) {
-                              snapshotVersion()
-                              setState((s) => ({
-                                ...s,
-                                notes: s.notes.map((n) => (n.id === activeNote.id ? { ...n, content: v.content, updatedAt: Date.now() } : n)),
-                              }))
-                              const id = activeNote.id
-                              setActiveId(null)
-                              setTimeout(() => setActiveId(id), 0)
-                            }
-                          }}
-                        >
-                          <option value="" disabled>⏱ History ({activeNote.versions.length})</option>
-                          {activeNote.versions.map((v, i) => (
-                            <option key={i} value={i}>{new Date(v.savedAt).toLocaleString()}</option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                    <Editor ref={editorRef} note={activeNote} settings={settings} onChange={updateNote} onTyping={onTyping} />
-                  </>
-                )
+                <div className={`panes ${splitId ? 'panes-split' : ''}`}>
+                  {renderPane(activeId, leftRef, 'left')}
+                  {splitId && renderPane(splitId, rightRef, 'right')}
+                </div>
               ) : (
                 <div className="empty-state">
                   {quoteOfDay && (
@@ -468,6 +503,7 @@ export default function App() {
               <Toggle on={settings.focusMode} onChange={(v) => set('focusMode', v)} label="Focus mode" icon="🎯" />
               <Toggle on={settings.typewriterMode} onChange={(v) => set('typewriterMode', v)} label="Typewriter mode" icon="⌨️" />
               <Toggle on={settings.typingSound} onChange={(v) => set('typingSound', v)} label="Typing sound" icon="🔊" />
+              <Toggle on={settings.autocorrect} onChange={(v) => set('autocorrect', v)} label="Autocorrect & spell-check" icon="✓" />
             </div>
             <div className="settings-group">
               <label>Accent

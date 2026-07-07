@@ -10,6 +10,7 @@ interface Props {
 
 export interface EditorHandle {
   markUsed: (term: string, source: string, date: string) => boolean
+  reload: (html: string) => void
 }
 
 const PAUSE_THRESHOLD = 5000
@@ -63,6 +64,16 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note.id])
 
+  // Autocorrect / spell-check are DOM attributes; keep them in sync with the setting.
+  useEffect(() => {
+    const val = settings.autocorrect ? 'on' : 'off'
+    for (const el of [ref.current, titleRef.current]) {
+      if (!el) continue
+      el.setAttribute('autocorrect', val)
+      el.setAttribute('autocapitalize', settings.autocorrect ? 'sentences' : 'off')
+    }
+  }, [settings.autocorrect])
+
   function emit() {
     setSaving(true)
     window.clearTimeout(saveTimer.current)
@@ -73,6 +84,9 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
   // Stamp the first unmarked occurrence of `term` with a permanent gold mark,
   // preserving the caret. Returns true if a mark was placed.
   useImperativeHandle(handleRef, () => ({
+    reload(html: string) {
+      if (ref.current) ref.current.innerHTML = html
+    },
     markUsed(term, source, date) {
       const root = ref.current
       if (!root || !term) return false
@@ -170,7 +184,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
             className="note-body"
             contentEditable
             suppressContentEditableWarning
-            spellCheck
+            spellCheck={settings.autocorrect}
             data-placeholder="Begin writing…"
             style={{
               fontFamily: settings.font,

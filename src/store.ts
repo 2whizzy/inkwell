@@ -14,6 +14,7 @@ export const defaultSettings: Settings = {
   focusMode: false,
   typewriterMode: false,
   typingSound: false,
+  autocorrect: true,
   paperTexture: 'plain',
   dailyGoal: 500,
   readerFont: 'Lora',

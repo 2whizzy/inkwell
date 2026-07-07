@@ -42,6 +42,31 @@ export async function extractReadable(html: string, baseUrl: string): Promise<Re
   }
 }
 
+// Prepare a full page for the live iframe: drop scripts, neutralize inline
+// handlers, inject a <base> so relative CSS/images/links resolve to the origin,
+// and force links to open in a new tab. Keeps styles + images for fidelity.
+export function sanitizeFullPage(html: string, baseUrl: string): { html: string; title: string } {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  doc.querySelectorAll('script, noscript, iframe, object, embed').forEach((el) => el.remove())
+  doc.querySelectorAll('*').forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      if (/^on/i.test(attr.name)) el.removeAttribute(attr.name)
+    }
+  })
+  if (baseUrl) {
+    const head = doc.head || doc.documentElement
+    let base = doc.querySelector('base')
+    if (!base) { base = doc.createElement('base'); head.prepend(base) }
+    base.setAttribute('href', baseUrl)
+  }
+  doc.querySelectorAll('a[href]').forEach((a) => {
+    a.setAttribute('target', '_blank')
+    a.setAttribute('rel', 'noreferrer')
+  })
+  const title = doc.querySelector('title')?.textContent?.trim() || ''
+  return { html: '<!doctype html>' + doc.documentElement.outerHTML, title }
+}
+
 // Strip scripts/handlers so injected reader HTML is safe to render.
 export function sanitize(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html')

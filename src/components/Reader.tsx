@@ -3,8 +3,17 @@ import type { Book, Rendition } from 'epubjs'
 import type { BookMeta, Highlight, Settings } from '../types'
 import { HIGHLIGHT_COLORS } from '../types'
 import { getFile } from '../idb'
-import { getPdfjs } from '../reader'
+import { getPdfjs, extractReadable } from '../reader'
 import { paintHighlights } from '../highlight'
+
+// ::highlight rules injected into the web-viewer iframe (its own document).
+const IFRAME_HL_CSS = `
+::highlight(ink-hl-0){background:rgba(240,205,70,.42)}
+::highlight(ink-hl-1){background:rgba(240,150,120,.42)}
+::highlight(ink-hl-2){background:rgba(90,200,165,.42)}
+::highlight(ink-hl-3){background:rgba(120,165,235,.42)}
+::highlight(ink-hl-4){background:rgba(190,130,230,.42)}
+::selection{background:rgba(120,160,210,.4)}`
 
 interface Chapter { label: string; goto: () => void; active?: boolean }
 interface Selected { text: string; locator: string; x: number; y: number; cfi?: string }
@@ -37,19 +46,24 @@ export function Reader(props: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sel, setSel] = useState<Selected | null>(null)
   const [spread, setSpread] = useState<Spread>(1)
-  const [isFull, setIsFull] = useState(false)
+  const [immersive, setImmersive] = useState(false)
   const bg = BG[settings.readerBg]
   const canSpread = book.kind === 'pdf' || book.kind === 'epub'
 
+  // Leaving browser fullscreen (Esc) should also drop immersive chrome-hiding.
   useEffect(() => {
-    const onFs = () => setIsFull(!!document.fullscreenElement)
+    const onFs = () => { if (!document.fullscreenElement) setImmersive(false) }
     document.addEventListener('fullscreenchange', onFs)
     return () => document.removeEventListener('fullscreenchange', onFs)
   }, [])
 
-  function toggleFullscreen() {
-    if (!document.fullscreenElement) rootRef.current?.requestFullscreen?.().catch(() => {})
-    else document.exitFullscreen?.()
+  async function enterImmersive() {
+    setImmersive(true)
+    try { await rootRef.current?.requestFullscreen?.() } catch { /* fullscreen may be blocked; chrome still hides */ }
+  }
+  function exitImmersive() {
+    setImmersive(false)
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {})
   }
 
   function act(kind: 'hl' | 'note' | 'learn', color?: string) {
@@ -62,7 +76,10 @@ export function Reader(props: Props) {
   }
 
   return (
-    <div ref={rootRef} className="reader" style={{ background: bg.bg, color: bg.fg }}>
+    <div ref={rootRef} className={`reader ${immersive ? 'reader-immersive' : ''}`} style={{ background: bg.bg, color: bg.fg }}>
+      {immersive && (
+        <button className="immersive-exit" onClick={exitImmersive} title="Exit focus (Esc)">✕ Exit focus</button>
+      )}
       <div className="reader-topbar">
         <button className="reader-back" onClick={onClose}>‹ Library</button>
         <button className="reader-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
@@ -91,7 +108,7 @@ export function Reader(props: Props) {
               <button onClick={() => onReaderSetting('readerFontSize', Math.min(30, settings.readerFontSize + 1))} title="Larger">A+</button>
             </>
           )}
-          <button className="reader-full" onClick={toggleFullscreen} title={isFull ? 'Exit fullscreen' : 'Fullscreen'}>{isFull ? '⤢' : '⛶'}</button>
+          <button className="reader-full" onClick={enterImmersive} title="Focused fullscreen — hides everything but the book">⛶ Focus</button>
         </div>
       </div>
 
@@ -340,38 +357,107 @@ function applyTheme(rend: Rendition, bg: { bg: string; fg: string }, settings: S
   rend.themes.override('font-family', `'${settings.readerFont}', serif`)
 }
 
-/* ---------------- Web / HTML snapshot ---------------- */
-function HtmlReader({ book, settings, highlights, onProgress, onSelect }: Props & {
+/* ---------------- Web page snapshot ---------------- */
+function HtmlReader({ book, settings, highlights, onSelect }: Props & {
+  onSelect: (s: Selected | null) => void
+}) {
+  const [raw, setRaw] = useState<string | null>(null)
+  const [mode, setMode] = useState<'live' | 'reader'>('live')
+
+  useEffect(() => {
+    getFile<string>(book.id).then((h) => setRaw(h || '<p>Snapshot unavailable.</p>'))
+  }, [book.id])
+
+  return (
+    <div className="web-wrap">
+      <div className="web-modebar">
+        <button className={mode === 'live' ? 'active' : ''} onClick={() => setMode('live')}>Live page</button>
+        <button className={mode === 'reader' ? 'active' : ''} onClick={() => setMode('reader')}>Reader</button>
+        {book.sourceUrl && <a className="web-open" href={book.sourceUrl} target="_blank" rel="noreferrer">Open original ↗</a>}
+      </div>
+      {raw === null ? (
+        <div className="html-reader"><p className="hint">Loading…</p></div>
+      ) : mode === 'live' ? (
+        <LiveFrame html={raw} highlights={highlights} onSelect={onSelect} />
+      ) : (
+        <ReaderMode raw={raw} url={book.sourceUrl || ''} settings={settings} highlights={highlights} onSelect={onSelect} />
+      )}
+    </div>
+  )
+}
+
+// Same-origin srcdoc iframe: renders the captured page as-is, and because it
+// shares our origin we can still read its selection and paint highlights.
+function LiveFrame({ html, highlights, onSelect }: {
+  html: string
+  highlights: Highlight[]
+  onSelect: (s: Selected | null) => void
+}) {
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  const [ready, setReady] = useState(false)
+
+  const repaint = useCallback(() => {
+    const doc = frameRef.current?.contentDocument
+    const win = frameRef.current?.contentWindow
+    if (doc?.body && win) paintHighlights(doc.body, highlights.map((h) => ({ text: h.text, color: h.color })), win)
+  }, [highlights])
+
+  function onLoad() {
+    const frame = frameRef.current
+    const doc = frame?.contentDocument
+    if (!frame || !doc) return
+    if (!doc.getElementById('ink-hl-style')) {
+      const style = doc.createElement('style')
+      style.id = 'ink-hl-style'
+      style.textContent = IFRAME_HL_CSS
+      doc.head?.appendChild(style)
+    }
+    doc.addEventListener('mouseup', () => {
+      const sel = doc.getSelection()
+      const text = sel?.toString().trim() || ''
+      if (!text || text.length < 2 || sel!.rangeCount === 0) { onSelect(null); return }
+      const r = sel!.getRangeAt(0).getBoundingClientRect()
+      const fr = frame.getBoundingClientRect()
+      onSelect({ text, locator: 'web', x: Math.max(12, fr.left + r.left + r.width / 2 - 90), y: fr.top + r.bottom + 8 })
+    })
+    doc.addEventListener('scroll', () => onSelect(null), true)
+    setReady(true)
+    repaint()
+  }
+
+  useEffect(() => { if (ready) repaint() }, [ready, repaint])
+
+  return <iframe ref={frameRef} className="web-frame" srcDoc={html} onLoad={onLoad} title="Web page" sandbox="allow-same-origin allow-popups" />
+}
+
+function ReaderMode({ raw, url, settings, highlights, onSelect }: {
+  raw: string
+  url: string
+  settings: Settings
+  highlights: Highlight[]
   onSelect: (s: Selected | null) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const [html, setHtml] = useState('<p class="hint">Loading…</p>')
+  const [html, setHtml] = useState('<p class="hint">Extracting…</p>')
 
   useEffect(() => {
-    getFile<string>(book.id).then((h) => setHtml(h || '<p>Snapshot unavailable.</p>'))
-  }, [book.id])
+    extractReadable(raw, url || location.href).then((a) =>
+      setHtml(a ? `<h1>${a.title}</h1>${a.byline ? `<p class="rm-byline">${a.byline}</p>` : ''}${a.contentHtml}` : '<p class="hint">Could not extract a clean article — try Live page.</p>'),
+    )
+  }, [raw, url])
 
   useEffect(() => {
     if (ref.current) paintHighlights(ref.current, highlights.map((h) => ({ text: h.text, color: h.color })))
   }, [highlights, html])
 
-  const onMouseUp = useDomSelection(ref, () => {
-    const el = ref.current
-    return el ? String(Math.round((el.scrollTop / (el.scrollHeight - el.clientHeight || 1)) * 100)) : '0'
-  }, onSelect)
-
-  function trackScroll() {
-    onSelect(null)
-    const el = ref.current
-    if (el) onProgress(el.scrollTop / (el.scrollHeight - el.clientHeight || 1), '0')
-  }
+  const onMouseUp = useDomSelection(ref, () => 'web', onSelect)
 
   return (
     <div
       ref={ref}
       className="html-reader"
       onMouseUp={onMouseUp}
-      onScroll={trackScroll}
+      onScroll={() => onSelect(null)}
       style={{ fontFamily: `'${settings.readerFont}', serif`, fontSize: settings.readerFontSize, lineHeight: 1.7 }}
       dangerouslySetInnerHTML={{ __html: html }}
     />

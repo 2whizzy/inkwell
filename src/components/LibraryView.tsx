@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import type { BookMeta } from '../types'
 import { uid } from '../types'
 import { importEpub, importPdf, saveWebSnapshot } from '../library'
-import { extractReadable, fetchViaProxy } from '../reader'
+import { fetchViaProxy } from '../reader'
 
 interface Props {
   books: BookMeta[]
@@ -79,13 +79,8 @@ export function LibraryView({ books, accentHex, onAdd, onOpen, onDelete, onMoveS
           return
         }
       }
-      const article = await extractReadable(html, sourceUrl || location.href)
-      if (!article) {
-        setBusy('')
-        setWebErr('Could not extract a readable article from that page.')
-        return
-      }
-      const meta = await saveWebSnapshot(article.title, article.byline, sourceUrl, article.contentHtml, accentHex)
+      // Store the whole page for the live viewer; Reader mode extracts on demand.
+      const meta = await saveWebSnapshot(sourceUrl, sourceUrl, html, accentHex)
       onAdd(meta)
       setWebOpen(false)
       setUrl('')
