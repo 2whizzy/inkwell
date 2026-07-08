@@ -97,9 +97,10 @@ export interface DayStats {
 export interface Settings {
   theme: 'paper' | 'ink'
   accent: 'ink-blue' | 'burgundy' | 'forest'
-  font: 'Lora' | 'Fraunces' | 'Inter' | 'Caveat' | 'JetBrains Mono'
+  font: string
   fontSize: number
   lineHeight: number
+  editorZoom: number
   focusMode: boolean
   typewriterMode: boolean
   typingSound: boolean
@@ -107,10 +108,18 @@ export interface Settings {
   paperTexture: 'plain' | 'ruled' | 'dotted' | 'linen'
   dailyGoal: number
   // Reader
-  readerFont: 'Lora' | 'Fraunces' | 'Inter' | 'JetBrains Mono'
+  readerFont: string
   readerFontSize: number
   readerBg: 'paper' | 'sepia' | 'dark' | 'black'
+  readerZoom: number
 }
+
+// Curated font library, shared by the writing surface and the reader.
+export const FONTS = [
+  'Lora', 'Fraunces', 'EB Garamond', 'Merriweather', 'Playfair Display',
+  'Source Serif 4', 'Libre Baskerville', 'Crimson Text', 'Inter',
+  'Nunito Sans', 'Atkinson Hyperlegible', 'Caveat', 'JetBrains Mono', 'Space Mono',
+] as const
 
 export interface AppState {
   notebooks: Notebook[]

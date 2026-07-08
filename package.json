@@ -12,9 +12,12 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "epubjs": "^0.3.93",
+    "framer-motion": "^12.42.2",
     "pdfjs-dist": "^6.1.200",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-confetti": "^6.4.0",
+    "react-dom": "^19.2.7",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

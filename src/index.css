@@ -223,20 +223,41 @@ input, select, textarea { font: inherit; color: var(--ink); }
 .fmt-italic { font-style: italic; }
 .fmt-underline { text-decoration: underline; }
 .fmt-strikeThrough { text-decoration: line-through; }
-.save-dot { margin-left: auto; font-size: 0.95rem; opacity: 0.25; transition: opacity 0.4s var(--ease); }
+.editor-typo { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.font-select {
+  max-width: 150px; padding: 5px 8px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--page); font-size: 0.8rem; outline: none;
+}
+.stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--page); }
+.stepper button { padding: 4px 8px; font-size: 0.78rem; color: var(--ink-soft); }
+.stepper button:hover { background: var(--paper-deep); color: var(--ink); }
+.stepper span { padding: 0 6px; font-size: 0.74rem; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 30px; text-align: center; }
+.save-dot { font-size: 0.95rem; opacity: 0.25; transition: opacity 0.4s var(--ease); }
 .save-dot-active { opacity: 1; animation: breathe 0.9s ease-in-out infinite; }
 @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.25); } }
 
-.editor-scroll { flex: 1; overflow-y: auto; padding: 12px 20px 60px; scroll-behavior: smooth; }
+.editor-scroll { flex: 1; overflow: auto; padding: 20px 20px 80px; scroll-behavior: smooth; }
+/* A4 sheet: fixed width, grows one A4 page at a time with faint page breaks */
 .page {
-  max-width: 760px; margin: 0 auto;
+  --a4-w: 210mm;
+  --a4-h: 297mm;
+  width: var(--a4-w); max-width: 100%; margin: 0 auto;
   background: var(--page);
-  border-radius: 14px;
   box-shadow: var(--shadow);
   border: 1px solid var(--line);
-  padding: clamp(24px, 6vw, 64px);
-  min-height: 70vh;
+  padding: 22mm 20mm;
+  min-height: var(--a4-h);
   animation: page-in 0.45s var(--ease);
+}
+/* Draw a subtle separator at every A4 page boundary so overflow reads as pages */
+.page-a4 {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--a4-h) - 1px),
+    color-mix(in srgb, var(--ink) 22%, transparent) calc(var(--a4-h) - 1px),
+    color-mix(in srgb, var(--ink) 22%, transparent) var(--a4-h)
+  );
 }
 @keyframes page-in {
   from { opacity: 0; transform: translateX(24px) rotateY(2deg); }
@@ -465,8 +486,9 @@ input[type='range'] { accent-color: var(--accent); }
   }
   .sidebar-open { transform: translateX(0); }
   .sidebar-scrim { display: block; position: fixed; inset: 0; z-index: 44; background: rgba(20, 15, 8, 0.3); animation: fade-in 0.3s var(--ease); }
-  .editor-scroll { padding: 8px 10px 60px; }
-  .page { border-radius: 10px; min-height: 60vh; }
+  .editor-scroll { padding: 12px 10px 60px; }
+  /* On phones the sheet fills width; keep A4 padding modest */
+  .page { padding: 14mm 12mm; }
   .note-title { font-size: 1.5rem; }
   .view-tabs button { padding: 6px 10px; font-size: 0.82rem; }
   .logo { font-size: 1rem; }
@@ -577,8 +599,10 @@ input[type='range'] { accent-color: var(--accent); }
 .reader-back { font-weight: 600; font-size: 0.9rem; padding: 6px 12px; border-radius: 8px; }
 .reader-back:hover { background: rgba(128,128,128,0.14); }
 .reader-menu { display: none; font-size: 1.2rem; padding: 4px 8px; }
-.reader-title { font-family: 'Fraunces', serif; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.reader-tools { display: flex; gap: 6px; align-items: center; }
+.reader-title { font-family: 'Fraunces', serif; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 40px; }
+.reader-tools { display: flex; gap: 6px; align-items: center; overflow-x: auto; scrollbar-width: none; }
+.reader-tools::-webkit-scrollbar { display: none; }
+.reader-tools > * { flex-shrink: 0; }
 .reader-tools select, .reader-tools > button { padding: 5px 9px; border-radius: 8px; border: 1px solid rgba(128,128,128,0.3); background: transparent; color: inherit; font-size: 0.8rem; }
 .reader-tools button:hover { background: rgba(128,128,128,0.14); }
 .spread-toggle { display: inline-flex; border: 1px solid rgba(128,128,128,0.3); border-radius: 8px; overflow: hidden; }
@@ -606,6 +630,14 @@ input[type='range'] { accent-color: var(--accent); }
 }
 .pdf-scroll.pdf-spread { flex-direction: row; flex-wrap: wrap; align-items: flex-start; justify-content: center; align-content: flex-start; gap: 20px; }
 .pdf-page { position: relative; box-shadow: 0 6px 22px rgba(0,0,0,0.28); background: #fff; flex-shrink: 0; }
+.pdf-wrap { position: relative; }
+.pdf-pageno {
+  position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 5; padding: 5px 14px; border-radius: 999px;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 0.78rem; font-weight: 600;
+  font-variant-numeric: tabular-nums; pointer-events: none;
+  opacity: 0.55; backdrop-filter: blur(4px);
+}
 .pdf-page canvas { display: block; }
 /* pdf.js text layer — positioned via the --scale-factor set on the container */
 .textLayer {

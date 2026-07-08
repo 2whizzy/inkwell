@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Book, Rendition } from 'epubjs'
 import type { BookMeta, Highlight, Settings } from '../types'
-import { HIGHLIGHT_COLORS } from '../types'
+import { HIGHLIGHT_COLORS, FONTS } from '../types'
 import { getFile } from '../idb'
 import { getPdfjs, extractReadable } from '../reader'
 import { paintHighlights } from '../highlight'
@@ -98,16 +98,21 @@ export function Reader(props: Props) {
             <option value="black">Black (OLED)</option>
           </select>
           {book.kind !== 'pdf' && (
-            <select value={settings.readerFont} onChange={(e) => onReaderSetting('readerFont', e.target.value as Settings['readerFont'])} title="Font">
-              {(['Lora', 'Fraunces', 'Inter', 'JetBrains Mono'] as const).map((f) => <option key={f} value={f}>{f}</option>)}
+            <select value={settings.readerFont} onChange={(e) => onReaderSetting('readerFont', e.target.value)} title="Font">
+              {FONTS.map((f) => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
             </select>
           )}
           {book.kind !== 'pdf' && (
             <>
-              <button onClick={() => onReaderSetting('readerFontSize', Math.max(14, settings.readerFontSize - 1))} title="Smaller">A−</button>
-              <button onClick={() => onReaderSetting('readerFontSize', Math.min(30, settings.readerFontSize + 1))} title="Larger">A+</button>
+              <button onClick={() => onReaderSetting('readerFontSize', Math.max(12, settings.readerFontSize - 1))} title="Smaller text">A−</button>
+              <button onClick={() => onReaderSetting('readerFontSize', Math.min(36, settings.readerFontSize + 1))} title="Larger text">A+</button>
             </>
           )}
+          <div className="stepper" title="Zoom">
+            <button onClick={() => onReaderSetting('readerZoom', Math.max(0.5, Math.round((settings.readerZoom - 0.1) * 10) / 10))}>－</button>
+            <span>{Math.round(settings.readerZoom * 100)}%</span>
+            <button onClick={() => onReaderSetting('readerZoom', Math.min(3, Math.round((settings.readerZoom + 0.1) * 10) / 10))}>＋</button>
+          </div>
           <button className="reader-full" onClick={enterImmersive} title="Focused fullscreen — hides everything but the book">⛶ Focus</button>
         </div>
       </div>
@@ -162,13 +167,16 @@ export function Reader(props: Props) {
 }
 
 /* ---------------- PDF ---------------- */
-function PdfReader({ book, highlights, onProgress, onSelect, setChapters, spread }: Props & {
+function PdfReader({ book, settings, highlights, onProgress, onSelect, setChapters, spread }: Props & {
   onSelect: (s: Selected | null) => void
   setChapters: (c: Chapter[]) => void
   spread: Spread
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const maxPage = useRef(1)
+  const curPage = useRef<number>(Number(book.locator) || 1)
+  const total = useRef(0)
+  const [label, setLabel] = useState('')
+  const zoom = settings.readerZoom
 
   useEffect(() => {
     let cancelled = false
@@ -182,6 +190,7 @@ function PdfReader({ book, highlights, onProgress, onSelect, setChapters, spread
       const pdfjs = await getPdfjs()
       const pdf = await pdfjs.getDocument({ data: data.slice(0) }).promise
       if (cancelled) return
+      total.current = pdf.numPages
 
       const outline = await pdf.getOutline().catch(() => null)
       if (outline?.length) {
@@ -189,26 +198,37 @@ function PdfReader({ book, highlights, onProgress, onSelect, setChapters, spread
           label: o.title,
           goto: async () => {
             const dest = typeof o.dest === 'string' ? await pdf.getDestination(o.dest) : o.dest
-            const ref = dest?.[0]
-            if (ref) {
-              const pageIndex = await pdf.getPageIndex(ref).catch(() => 0)
-              scroller.querySelector(`[data-page="${pageIndex + 1}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-            }
+            const ref = Array.isArray(dest) ? dest[0] : null
+            if (!ref) return
+            const pageIndex = await pdf.getPageIndex(ref).catch(() => -1)
+            if (pageIndex >= 0) goToPage(pageIndex + 1)
           },
         })))
       } else setChapters([])
 
-      // Available width for one page, accounting for the gutter between a spread.
       const gap = 20
       const pad = 32
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const usable = scroller.clientWidth - pad
-      const pageW = spread === 2 ? (usable - gap) / 2 : Math.min(usable, 900)
+      const fitW = spread === 2 ? (usable - gap) / 2 : Math.min(usable, 900)
+      const pageW = fitW * zoom
+
+      // Estimate page height from page 1 so every holder occupies space up-front —
+      // this is what makes sidebar navigation and resume land on the right page.
+      let aspect = 1.414
+      try {
+        const first = await pdf.getPage(1)
+        const v = first.getViewport({ scale: 1 })
+        aspect = v.height / v.width
+      } catch { /* keep A4 estimate */ }
+      const estH = Math.round(pageW * aspect)
 
       for (let p = 1; p <= pdf.numPages; p++) {
         const holder = document.createElement('div')
         holder.className = 'pdf-page'
         holder.dataset.page = String(p)
+        holder.style.width = `${Math.floor(pageW)}px`
+        holder.style.height = `${estH}px`
         scroller.appendChild(holder)
         const io = new IntersectionObserver(async (entries) => {
           if (!entries[0].isIntersecting || holder.dataset.rendered) return
@@ -246,29 +266,57 @@ function PdfReader({ book, highlights, onProgress, onSelect, setChapters, spread
             await tl.render()
           } catch { /* selection unavailable for this page */ }
 
-          if (p > maxPage.current) {
-            maxPage.current = p
-            onProgress(p / pdf.numPages, String(p))
-          }
           paintHighlights(scroller, highlights.map((h) => ({ text: h.text, color: h.color })))
-        }, { root: scroller, rootMargin: '800px' })
+        }, { root: scroller, rootMargin: '1000px' })
         observers.push(io)
         io.observe(holder)
       }
+
+      setLabel(`${curPage.current} / ${pdf.numPages}`)
+      // Resume / preserve position after a rebuild (open, zoom or spread change).
+      requestAnimationFrame(() => { if (!cancelled) goToPage(curPage.current, 'auto') })
     })()
     return () => { cancelled = true; observers.forEach((o) => o.disconnect()) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [book.id, spread])
+  }, [book.id, spread, zoom])
+
+  function goToPage(p: number, behavior: ScrollBehavior = 'smooth') {
+    const el = scrollRef.current?.querySelector(`[data-page="${p}"]`) as HTMLElement | null
+    if (el && scrollRef.current) scrollRef.current.scrollTo({ top: el.offsetTop - 12, behavior })
+  }
 
   useEffect(() => {
     if (scrollRef.current) paintHighlights(scrollRef.current, highlights.map((h) => ({ text: h.text, color: h.color })))
   }, [highlights])
 
-  const onMouseUp = useDomSelection(scrollRef, () => String(maxPage.current), onSelect)
+  const ticking = useRef(false)
+  function onScroll() {
+    onSelect(null)
+    if (ticking.current) return
+    ticking.current = true
+    requestAnimationFrame(() => {
+      ticking.current = false
+      const scroller = scrollRef.current
+      if (!scroller || !total.current) return
+      const mid = scroller.scrollTop + scroller.clientHeight / 2
+      let p = 1
+      for (const el of Array.from(scroller.querySelectorAll('.pdf-page')) as HTMLElement[]) {
+        if (el.offsetTop <= mid) p = Number(el.dataset.page)
+      }
+      if (p !== curPage.current) {
+        curPage.current = p
+        setLabel(`${p} / ${total.current}`)
+        onProgress(p / total.current, String(p))
+      }
+    })
+  }
+
+  const onMouseUp = useDomSelection(scrollRef, () => String(curPage.current), onSelect)
 
   return (
     <div className="pdf-wrap">
-      <div ref={scrollRef} className={`pdf-scroll ${spread === 2 ? 'pdf-spread' : ''}`} onMouseUp={onMouseUp} onScroll={() => onSelect(null)} />
+      <div ref={scrollRef} className={`pdf-scroll ${spread === 2 ? 'pdf-spread' : ''}`} onMouseUp={onMouseUp} onScroll={onScroll} />
+      {label && <div className="pdf-pageno">{label}</div>}
     </div>
   )
 }
@@ -331,7 +379,7 @@ function EpubReader({ book, settings, highlights, onProgress, onHighlight, onSel
 
   useEffect(() => {
     if (rendition.current) applyTheme(rendition.current, bg, settings)
-  }, [settings.readerBg, settings.readerFontSize, settings.readerFont, bg])
+  }, [settings.readerBg, settings.readerFontSize, settings.readerFont, settings.readerZoom, bg])
 
   useEffect(() => {
     const rend = rendition.current
@@ -353,12 +401,12 @@ function EpubReader({ book, settings, highlights, onProgress, onHighlight, onSel
 function applyTheme(rend: Rendition, bg: { bg: string; fg: string }, settings: Settings) {
   rend.themes.override('color', bg.fg)
   rend.themes.override('background', bg.bg)
-  rend.themes.override('font-size', `${settings.readerFontSize}px`)
+  rend.themes.override('font-size', `${Math.round(settings.readerFontSize * settings.readerZoom)}px`)
   rend.themes.override('font-family', `'${settings.readerFont}', serif`)
 }
 
 /* ---------------- Web page snapshot ---------------- */
-function HtmlReader({ book, settings, highlights, onSelect }: Props & {
+function HtmlReader({ book, settings, highlights, onProgress, onSelect }: Props & {
   onSelect: (s: Selected | null) => void
 }) {
   const [raw, setRaw] = useState<string | null>(null)
@@ -378,9 +426,9 @@ function HtmlReader({ book, settings, highlights, onSelect }: Props & {
       {raw === null ? (
         <div className="html-reader"><p className="hint">Loading…</p></div>
       ) : mode === 'live' ? (
-        <LiveFrame html={raw} highlights={highlights} onSelect={onSelect} />
+        <LiveFrame html={raw} zoom={settings.readerZoom} resumeAt={Number(book.locator) || 0} highlights={highlights} onProgress={onProgress} onSelect={onSelect} />
       ) : (
-        <ReaderMode raw={raw} url={book.sourceUrl || ''} settings={settings} highlights={highlights} onSelect={onSelect} />
+        <ReaderMode raw={raw} url={book.sourceUrl || ''} settings={settings} resumeAt={Number(book.locator) || 0} highlights={highlights} onProgress={onProgress} onSelect={onSelect} />
       )}
     </div>
   )
@@ -388,9 +436,12 @@ function HtmlReader({ book, settings, highlights, onSelect }: Props & {
 
 // Same-origin srcdoc iframe: renders the captured page as-is, and because it
 // shares our origin we can still read its selection and paint highlights.
-function LiveFrame({ html, highlights, onSelect }: {
+function LiveFrame({ html, zoom, resumeAt, highlights, onProgress, onSelect }: {
   html: string
+  zoom: number
+  resumeAt: number
   highlights: Highlight[]
+  onProgress: (progress: number, locator: string) => void
   onSelect: (s: Selected | null) => void
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null)
@@ -405,7 +456,8 @@ function LiveFrame({ html, highlights, onSelect }: {
   function onLoad() {
     const frame = frameRef.current
     const doc = frame?.contentDocument
-    if (!frame || !doc) return
+    const win = frame?.contentWindow
+    if (!frame || !doc || !win) return
     if (!doc.getElementById('ink-hl-style')) {
       const style = doc.createElement('style')
       style.id = 'ink-hl-style'
@@ -420,21 +472,47 @@ function LiveFrame({ html, highlights, onSelect }: {
       const fr = frame.getBoundingClientRect()
       onSelect({ text, locator: 'web', x: Math.max(12, fr.left + r.left + r.width / 2 - 90), y: fr.top + r.bottom + 8 })
     })
-    doc.addEventListener('scroll', () => onSelect(null), true)
+    doc.addEventListener('scroll', () => {
+      onSelect(null)
+      const el = doc.scrollingElement
+      if (el) {
+        const frac = el.scrollTop / (el.scrollHeight - el.clientHeight || 1)
+        onProgress(frac, String(Math.round(frac * 100)))
+      }
+    }, true)
+    // Resume where we left off (scroll % saved as locator).
+    if (resumeAt > 0) {
+      requestAnimationFrame(() => {
+        const el = doc.scrollingElement
+        if (el) el.scrollTop = (resumeAt / 100) * (el.scrollHeight - el.clientHeight)
+      })
+    }
     setReady(true)
     repaint()
   }
 
   useEffect(() => { if (ready) repaint() }, [ready, repaint])
 
-  return <iframe ref={frameRef} className="web-frame" srcDoc={html} onLoad={onLoad} title="Web page" sandbox="allow-same-origin allow-popups" />
+  return (
+    <iframe
+      ref={frameRef}
+      className="web-frame"
+      style={{ zoom }}
+      srcDoc={html}
+      onLoad={onLoad}
+      title="Web page"
+      sandbox="allow-same-origin allow-popups"
+    />
+  )
 }
 
-function ReaderMode({ raw, url, settings, highlights, onSelect }: {
+function ReaderMode({ raw, url, settings, resumeAt, highlights, onProgress, onSelect }: {
   raw: string
   url: string
   settings: Settings
+  resumeAt: number
   highlights: Highlight[]
+  onProgress: (progress: number, locator: string) => void
   onSelect: (s: Selected | null) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -447,18 +525,30 @@ function ReaderMode({ raw, url, settings, highlights, onSelect }: {
   }, [raw, url])
 
   useEffect(() => {
-    if (ref.current) paintHighlights(ref.current, highlights.map((h) => ({ text: h.text, color: h.color })))
+    if (!ref.current) return
+    paintHighlights(ref.current, highlights.map((h) => ({ text: h.text, color: h.color })))
+    if (resumeAt > 0) ref.current.scrollTop = (resumeAt / 100) * (ref.current.scrollHeight - ref.current.clientHeight)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlights, html])
 
   const onMouseUp = useDomSelection(ref, () => 'web', onSelect)
+
+  function trackScroll() {
+    onSelect(null)
+    const el = ref.current
+    if (el) {
+      const frac = el.scrollTop / (el.scrollHeight - el.clientHeight || 1)
+      onProgress(frac, String(Math.round(frac * 100)))
+    }
+  }
 
   return (
     <div
       ref={ref}
       className="html-reader"
       onMouseUp={onMouseUp}
-      onScroll={() => onSelect(null)}
-      style={{ fontFamily: `'${settings.readerFont}', serif`, fontSize: settings.readerFontSize, lineHeight: 1.7 }}
+      onScroll={trackScroll}
+      style={{ fontFamily: `'${settings.readerFont}', serif`, fontSize: settings.readerFontSize * settings.readerZoom, lineHeight: 1.7 }}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )

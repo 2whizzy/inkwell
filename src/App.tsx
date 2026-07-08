@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BookMeta, Note } from './types'
-import { today, uid } from './types'
+import { FONTS, today, uid } from './types'
 import { dueQueue, gradeEntry } from './sm2'
 import { detectUsage } from './matcher'
 import { classifyPassage } from './reader'
@@ -361,7 +361,7 @@ export default function App() {
         ) : (
           <>
             {renderActions(note)}
-            <Editor ref={ref} note={note} settings={settings} onChange={(c, tt) => updateNoteById(note.id, ref, c, tt)} onTyping={onTyping} />
+            <Editor ref={ref} note={note} settings={settings} onChange={(c, tt) => updateNoteById(note.id, ref, c, tt)} onTyping={onTyping} onSetting={set} />
           </>
         )}
       </div>
@@ -514,8 +514,8 @@ export default function App() {
                 </select>
               </label>
               <label>Font
-                <select value={settings.font} onChange={(e) => set('font', e.target.value as typeof settings.font)}>
-                  {(['Lora', 'Fraunces', 'Inter', 'Caveat', 'JetBrains Mono'] as const).map((f) => (
+                <select value={settings.font} onChange={(e) => set('font', e.target.value)} style={{ fontFamily: settings.font }}>
+                  {FONTS.map((f) => (
                     <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
                   ))}
                 </select>

@@ -1,11 +1,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { Note, Settings } from '../types'
+import { FONTS } from '../types'
 
 interface Props {
   note: Note
   settings: Settings
   onChange: (content: string, title: string) => void
   onTyping: (chars: number, deltaMs: number) => void
+  onSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void
 }
 
 export interface EditorHandle {
@@ -48,7 +50,7 @@ const FORMATS: { cmd: string; label: string; title: string; arg?: string }[] = [
 ]
 
 export const Editor = forwardRef<EditorHandle, Props>(function Editor(
-  { note, settings, onChange, onTyping },
+  { note, settings, onChange, onTyping, onSetting },
   handleRef,
 ) {
   const ref = useRef<HTMLDivElement>(null)
@@ -165,12 +167,33 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
             {f.label}
           </button>
         ))}
+        <div className="editor-typo">
+          <select
+            className="font-select"
+            value={settings.font}
+            title="Font"
+            onChange={(e) => onSetting('font', e.target.value)}
+            style={{ fontFamily: settings.font }}
+          >
+            {FONTS.map((f) => (<option key={f} value={f} style={{ fontFamily: f }}>{f}</option>))}
+          </select>
+          <div className="stepper" title="Font size">
+            <button onMouseDown={(e) => { e.preventDefault(); onSetting('fontSize', Math.max(12, settings.fontSize - 1)) }}>A−</button>
+            <span>{settings.fontSize}</span>
+            <button onMouseDown={(e) => { e.preventDefault(); onSetting('fontSize', Math.min(40, settings.fontSize + 1)) }}>A+</button>
+          </div>
+          <div className="stepper" title="Zoom">
+            <button onMouseDown={(e) => { e.preventDefault(); onSetting('editorZoom', Math.max(0.5, Math.round((settings.editorZoom - 0.1) * 10) / 10)) }}>－</button>
+            <span>{Math.round(settings.editorZoom * 100)}%</span>
+            <button onMouseDown={(e) => { e.preventDefault(); onSetting('editorZoom', Math.min(2, Math.round((settings.editorZoom + 0.1) * 10) / 10)) }}>＋</button>
+          </div>
+        </div>
         <span className={`save-dot ${saving ? 'save-dot-active' : ''}`} title="Autosaved">
           🖋
         </span>
       </div>
       <div className="editor-scroll">
-        <div className={`page texture-${settings.paperTexture}`} key={note.id}>
+        <div className={`page page-a4 texture-${settings.paperTexture}`} key={note.id} style={{ zoom: settings.editorZoom }}>
           <input
             ref={titleRef}
             className="note-title"

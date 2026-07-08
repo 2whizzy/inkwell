@@ -11,6 +11,7 @@ export const defaultSettings: Settings = {
   font: 'Lora',
   fontSize: 19,
   lineHeight: 1.75,
+  editorZoom: 1,
   focusMode: false,
   typewriterMode: false,
   typingSound: false,
@@ -20,6 +21,7 @@ export const defaultSettings: Settings = {
   readerFont: 'Lora',
   readerFontSize: 20,
   readerBg: 'paper',
+  readerZoom: 1,
 }
 
 export function newVocab(partial: Partial<VocabEntry>): VocabEntry {
